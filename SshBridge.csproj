@@ -1,0 +1,22 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <OutputType>WinExe</OutputType>
+    <TargetFramework>net8.0-windows</TargetFramework>
+    <UseWindowsForms>true</UseWindowsForms>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <AssemblyName>ssh-bridge</AssemblyName>
+    <RootNamespace>SshBridge</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Compile Remove="*.cs" />
+    <Compile Include="SshBridge.cs" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="SSH.NET" Version="2024.2.0" />
+  </ItemGroup>
+
+</Project>
