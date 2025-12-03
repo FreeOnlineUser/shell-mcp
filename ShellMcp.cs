@@ -85,6 +85,11 @@ namespace ShellMcp
             var startDir = Environment.GetEnvironmentVariable("SHELL_MCP_START_DIR");
             if (!string.IsNullOrEmpty(startDir) && Directory.Exists(startDir))
                 _currentDirectory = startDir;
+
+            // Set SSH Bridge path from environment
+            var bridgePath = Environment.GetEnvironmentVariable("SSH_BRIDGE_PATH");
+            if (!string.IsNullOrEmpty(bridgePath))
+                SshBridgeClient.SetBridgePath(bridgePath);
         }
 
         public static string Mode => _mode;
@@ -322,6 +327,13 @@ namespace ShellMcp
     {
         private const int PORT = 52718;
 
+        private static string? _bridgePath;
+
+        public static void SetBridgePath(string path)
+        {
+            _bridgePath = path;
+        }
+
         public static string GetStatus()
         {
             try
@@ -331,6 +343,40 @@ namespace ShellMcp
             catch
             {
                 return "DISCONNECTED";
+            }
+        }
+
+        public static bool LaunchBridge()
+        {
+            if (string.IsNullOrEmpty(_bridgePath) || !System.IO.File.Exists(_bridgePath))
+                return false;
+
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+                {
+                    FileName = _bridgePath,
+                    UseShellExecute = true
+                });
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        public static bool IsBridgeRunning()
+        {
+            try
+            {
+                using var client = new System.Net.Sockets.TcpClient();
+                client.Connect("127.0.0.1", PORT);
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -438,18 +484,27 @@ namespace ShellMcp
 
             try
             {
+                // Check if bridge is running, launch if not
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    if (SshBridgeClient.LaunchBridge())
+                    {
+                        return "🚀 SSH Bridge launched!\n\nPlease:\n1. Enter host, user, and password in the window that just opened\n2. Click Connect\n3. Try this command again";
+                    }
+                    else
+                    {
+                        return "❌ SSH Bridge not running and could not auto-launch.\n\nPlease run ssh-bridge.exe manually, or set SSH_BRIDGE_PATH in your Claude config.";
+                    }
+                }
+
                 var status = SshBridgeClient.GetStatus();
                 if (status == "DISCONNECTED")
                 {
-                    return "❌ SSH Bridge not connected.\n\nPlease:\n1. Run ssh-bridge.exe\n2. Enter host, user, and password\n3. Click Connect\n4. Try this command again";
+                    return "⚠️ SSH Bridge is open but not connected.\n\nPlease:\n1. Enter host, user, and password\n2. Click Connect\n3. Try this command again";
                 }
 
                 var result = SshBridgeClient.SendCommand(command);
                 return $"📡 {status}\n\n{result}";
-            }
-            catch (TimeoutException)
-            {
-                return "❌ SSH Bridge not running. Start ssh-bridge.exe first.";
             }
             catch (Exception ex)
             {
@@ -462,16 +517,21 @@ namespace ShellMcp
         {
             try
             {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
                 var status = SshBridgeClient.GetStatus();
                 if (status.StartsWith("CONNECTED:"))
                 {
                     return $"✅ {status.Replace("CONNECTED:", "Connected to ")}";
                 }
-                return "❌ SSH Bridge not connected";
+                return "⚠️ SSH Bridge open but not connected";
             }
             catch
             {
-                return "❌ SSH Bridge not running. Start ssh-bridge.exe first.";
+                return "❌ SSH Bridge not running";
             }
         }
     }
