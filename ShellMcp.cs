@@ -394,6 +394,19 @@ namespace ShellMcp
             // Decode newlines
             return response.Replace("<<CRLF>>", "\r\n").Replace("<<LF>>", "\n");
         }
+
+        public static string Prefill(string host, int port, string user, string? password = null)
+        {
+            var cmd = $"__PREFILL__:{host}:{port}:{user}";
+            if (!string.IsNullOrEmpty(password))
+                cmd += $":{password}";
+            return SendCommand(cmd);
+        }
+
+        public static string TriggerConnect()
+        {
+            return SendCommand("__CONNECT__");
+        }
     }
 
     // ===============================================
@@ -532,6 +545,59 @@ namespace ShellMcp
             catch
             {
                 return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Pre-fill SSH Bridge connection details. Launches SSH Bridge if not running, fills in host/port/user, optionally password. User must click Connect or you can call with auto_connect=true.")]
+        public static string SshPrefill(
+            [Description("SSH host/IP address")] string host,
+            [Description("SSH username")] string user,
+            [Description("SSH port (default: 22)")] int port = 22,
+            [Description("SSH password (optional - user can enter manually for security)")] string? password = null,
+            [Description("Automatically click Connect after prefilling")] bool auto_connect = false)
+        {
+            try
+            {
+                // Launch bridge if not running
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    if (!SshBridgeClient.LaunchBridge())
+                    {
+                        return "❌ Could not launch SSH Bridge. Set SSH_BRIDGE_PATH in your Claude config.";
+                    }
+                    // Wait for it to start
+                    Thread.Sleep(1000);
+                }
+
+                // Prefill the fields
+                var result = SshBridgeClient.Prefill(host, port, user, password);
+                if (result != "PREFILLED")
+                {
+                    return $"❌ Prefill failed: {result}";
+                }
+
+                if (auto_connect && !string.IsNullOrEmpty(password))
+                {
+                    Thread.Sleep(200);
+                    SshBridgeClient.TriggerConnect();
+                    Thread.Sleep(2000); // Wait for connection
+                    var status = SshBridgeClient.GetStatus();
+                    if (status.StartsWith("CONNECTED:"))
+                    {
+                        return $"✅ Connected to {user}@{host}:{port}";
+                    }
+                    return $"⚠️ Connection initiated. Status: {status}";
+                }
+
+                if (string.IsNullOrEmpty(password))
+                {
+                    return $"📝 SSH Bridge prefilled with {user}@{host}:{port}\n\nPlease enter password and click Connect.";
+                }
+                return $"📝 SSH Bridge prefilled with {user}@{host}:{port}\n\nClick Connect when ready.";
+            }
+            catch (Exception ex)
+            {
+                return $"❌ Error: {ex.Message}";
             }
         }
     }

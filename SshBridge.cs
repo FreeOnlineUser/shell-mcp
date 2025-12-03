@@ -24,8 +24,9 @@ namespace SshBridge
 
     public class SshBridgeForm : Form
     {
-        private TextBox _outputBox = null!;
+        private RichTextBox _outputBox = null!;
         private TextBox _hostBox = null!;
+        private TextBox _portBox = null!;
         private TextBox _userBox = null!;
         private TextBox _passwordBox = null!;
         private Button _connectButton = null!;
@@ -69,11 +70,12 @@ namespace SshBridge
             {
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
-                RowCount = 5,
+                RowCount = 6,
                 Padding = new Padding(50, 30, 50, 30),
             };
             loginLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 100));
             loginLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+            loginLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             loginLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             loginLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
             loginLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 40));
@@ -84,20 +86,24 @@ namespace SshBridge
             _hostBox = new TextBox { Dock = DockStyle.Fill, Text = "" };
             loginLayout.Controls.Add(_hostBox, 1, 0);
 
-            loginLayout.Controls.Add(new Label { Text = "User:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 1);
-            _userBox = new TextBox { Dock = DockStyle.Fill, Text = "" };
-            loginLayout.Controls.Add(_userBox, 1, 1);
+            loginLayout.Controls.Add(new Label { Text = "Port:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 1);
+            _portBox = new TextBox { Dock = DockStyle.Fill, Text = "22", Width = 80 };
+            loginLayout.Controls.Add(_portBox, 1, 1);
 
-            loginLayout.Controls.Add(new Label { Text = "Password:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 2);
+            loginLayout.Controls.Add(new Label { Text = "User:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 2);
+            _userBox = new TextBox { Dock = DockStyle.Fill, Text = "" };
+            loginLayout.Controls.Add(_userBox, 1, 2);
+
+            loginLayout.Controls.Add(new Label { Text = "Password:", Anchor = AnchorStyles.Left, AutoSize = true }, 0, 3);
             _passwordBox = new TextBox { Dock = DockStyle.Fill, UseSystemPasswordChar = true };
             _passwordBox.KeyPress += (s, e) => { if (e.KeyChar == (char)Keys.Enter) Connect(); };
-            loginLayout.Controls.Add(_passwordBox, 1, 2);
+            loginLayout.Controls.Add(_passwordBox, 1, 3);
 
             _connectButton = new Button { Text = "Connect", Width = 100, Height = 35 };
             _connectButton.Click += (s, e) => Connect();
             var buttonPanel = new FlowLayoutPanel { Dock = DockStyle.Fill, FlowDirection = FlowDirection.LeftToRight };
             buttonPanel.Controls.Add(_connectButton);
-            loginLayout.Controls.Add(buttonPanel, 1, 3);
+            loginLayout.Controls.Add(buttonPanel, 1, 4);
 
             _loginPanel.Controls.Add(loginLayout);
 
@@ -141,16 +147,14 @@ namespace SshBridge
             topBar.Controls.Add(_disconnectButton);
             topBar.Resize += (s, e) => _disconnectButton.Location = new Point(topBar.Width - _disconnectButton.Width - 10, 6);
 
-            _outputBox = new TextBox
+            _outputBox = new RichTextBox
             {
                 Dock = DockStyle.Fill,
-                Multiline = true,
                 ReadOnly = true,
-                ScrollBars = ScrollBars.Vertical,
                 BackColor = Color.FromArgb(30, 30, 30),
                 ForeColor = Color.FromArgb(220, 220, 220),
                 Font = new Font("Consolas", 10),
-                WordWrap = true,
+                WordWrap = false,
             };
 
             _sessionPanel.Controls.Add(_outputBox);
@@ -165,6 +169,9 @@ namespace SshBridge
             string host = _hostBox.Text.Trim();
             string user = _userBox.Text.Trim();
             string password = _passwordBox.Text;
+            int port = 22;
+            int.TryParse(_portBox.Text.Trim(), out port);
+            if (port <= 0 || port > 65535) port = 22;
 
             if (string.IsNullOrEmpty(host) || string.IsNullOrEmpty(user) || string.IsNullOrEmpty(password))
             {
@@ -179,7 +186,7 @@ namespace SshBridge
             {
                 try
                 {
-                    _sshClient = new SshClient(host, user, password);
+                    _sshClient = new SshClient(host, port, user, password);
                     _sshClient.ConnectionInfo.Timeout = TimeSpan.FromSeconds(10);
                     _sshClient.Connect();
 
@@ -219,7 +226,7 @@ namespace SshBridge
             _sessionPanel.Visible = true;
             _statusLabel.Text = $"Connected to {_currentUser}@{_currentHost}";
             _outputBox.Clear();
-            AppendOutput($"=== Connected to {_currentUser}@{_currentHost} ===\r\n");
+            AppendOutput($"=== Connected to {_currentUser}@{_currentHost} ===", Color.LimeGreen);
         }
 
         private void Disconnect()
@@ -244,18 +251,24 @@ namespace SshBridge
             _statusLabel.Text = "Disconnected";
         }
 
-        private void AppendOutput(string? text)
+        private void AppendOutput(string? text, Color? color = null)
         {
             if (string.IsNullOrEmpty(text)) return;
             
             if (_outputBox.InvokeRequired)
             {
-                _outputBox.Invoke(() => AppendOutput(text));
+                _outputBox.Invoke(() => AppendOutput(text, color));
                 return;
             }
 
-            _outputBox.AppendText(text + "\r\n");
-            _outputBox.SelectionStart = _outputBox.Text.Length;
+            // Normalize line endings to Windows style
+            var normalized = text.Replace("\r\n", "\n").Replace("\r", "\n").Replace("\n", "\r\n");
+            
+            _outputBox.SelectionStart = _outputBox.TextLength;
+            _outputBox.SelectionLength = 0;
+            _outputBox.SelectionColor = color ?? Color.FromArgb(220, 220, 220);
+            _outputBox.AppendText(normalized + "\r\n");
+            _outputBox.SelectionColor = _outputBox.ForeColor;
             _outputBox.ScrollToCaret();
         }
 
@@ -271,7 +284,7 @@ namespace SshBridge
                 _commandCount++;
                 this.Invoke(() => _statusLabel.Text = $"Connected to {_currentUser}@{_currentHost} ({_commandCount} commands)");
                 
-                AppendOutput($"> {command}");
+                AppendOutput($"> {command}", Color.Cyan);
                 
                 using var cmd = _sshClient.CreateCommand(command);
                 cmd.CommandTimeout = TimeSpan.FromSeconds(30);
@@ -296,7 +309,7 @@ namespace SshBridge
             catch (Exception ex)
             {
                 var error = $"ERROR: {ex.Message}";
-                AppendOutput(error);
+                AppendOutput(error, Color.Red);
                 return error;
             }
         }
@@ -339,6 +352,39 @@ namespace SshBridge
                         if (command == "__STATUS__")
                         {
                             response = _isConnected ? $"CONNECTED:{_currentUser}@{_currentHost}" : "DISCONNECTED";
+                        }
+                        else if (command.StartsWith("__PREFILL__:"))
+                        {
+                            // Format: __PREFILL__:host:port:user:password
+                            // Password is optional - if not provided, user must enter it
+                            var parts = command.Substring(12).Split(':', 4);
+                            if (parts.Length >= 3)
+                            {
+                                this.Invoke(() =>
+                                {
+                                    _hostBox.Text = parts[0];
+                                    _portBox.Text = parts[1];
+                                    _userBox.Text = parts[2];
+                                    if (parts.Length >= 4 && !string.IsNullOrEmpty(parts[3]))
+                                    {
+                                        _passwordBox.Text = parts[3];
+                                    }
+                                    _passwordBox.Focus();
+                                    this.Activate();
+                                    this.BringToFront();
+                                });
+                                response = "PREFILLED";
+                            }
+                            else
+                            {
+                                response = "ERROR: Invalid prefill format. Use __PREFILL__:host:port:user[:password]";
+                            }
+                        }
+                        else if (command == "__CONNECT__")
+                        {
+                            // Trigger connect if fields are filled
+                            this.Invoke(() => Connect());
+                            response = "CONNECTING";
                         }
                         else
                         {
