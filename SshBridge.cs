@@ -210,6 +210,27 @@ namespace SshBridge
                 WordWrap = false,
             };
 
+            // Right-click context menu
+            var contextMenu = new ContextMenuStrip();
+            var copyItem = new ToolStripMenuItem("Copy", null, (s, e) =>
+            {
+                if (_outputBox.SelectionLength > 0)
+                    Clipboard.SetText(_outputBox.SelectedText);
+            });
+            var copyAllItem = new ToolStripMenuItem("Copy All", null, (s, e) =>
+            {
+                if (!string.IsNullOrEmpty(_outputBox.Text))
+                    Clipboard.SetText(_outputBox.Text);
+            });
+            var clearItem = new ToolStripMenuItem("Clear", null, (s, e) =>
+            {
+                _outputBox.Clear();
+            });
+            contextMenu.Items.Add(copyItem);
+            contextMenu.Items.Add(copyAllItem);
+            contextMenu.Items.AddRange(new ToolStripItem[] { new ToolStripSeparator(), clearItem });
+            _outputBox.ContextMenuStrip = contextMenu;
+
             _sessionPanel.Controls.Add(_outputBox);
             _sessionPanel.Controls.Add(topBar);
 
@@ -433,10 +454,17 @@ namespace SshBridge
                 try
                 {
                     _commandCount++;
-                    this.Invoke(() => _statusLabel.Text = $"Connected to {_currentUser}@{_currentHost} ({_commandCount} commands)");
                     
                     // Clear any pending output
                     ReadAvailable();
+                    
+                    // Block interactive commands that would break the shell
+                    if (IsBlockedCommand(command, out string blockReason))
+                    {
+                        AppendOutput($"> {command}", Color.Gray);
+                        AppendOutput($"[BLOCKED - Interactive command]\n{blockReason}", Color.Red);
+                        return $"BLOCKED: Interactive command not supported.\n{blockReason}";
+                    }
                     
                     // Block sudo commands if sudo not enabled - BEFORE sending
                     if (command.TrimStart().StartsWith("sudo") && !_allowSudo)
@@ -514,6 +542,17 @@ namespace SshBridge
             
             while (sw.ElapsedMilliseconds < timeoutMs)
             {
+                // Check for pen-lift interrupt - abort immediately
+                if (_penLifted)
+                {
+                    try { _shellStream.Write("\x03"); } catch { } // Send Ctrl+C
+                    Thread.Sleep(200);
+                    sb.Append(ReadAvailable()); // Grab remaining output
+                    sb.Append("\n[ABORTED BY USER - Pen lifted]");
+                    AppendOutput("[Command aborted - Pen lifted]", Color.Orange);
+                    return sb.ToString();
+                }
+                
                 if (_shellStream.DataAvailable)
                 {
                     var buffer = new byte[4096];
@@ -573,7 +612,7 @@ namespace SshBridge
             if ((lastLine.EndsWith("$") || lastLine.EndsWith("#")) && lastLine.Contains("@")) return true;
             
             // Windows cmd prompt: ends with > and contains drive letter or path
-            if (lastLine.EndsWith(">") && (lastLine.Contains(":\\") || lastLine.Contains(":/"))) return true;
+            if (lastLine.EndsWith(">") && (lastLine.Contains("\\") || lastLine.Contains(":/"))) return true;
             
             // PowerShell prompt
             if (lastLine.EndsWith("PS>") || lastLine.EndsWith("PS >")) return true;
@@ -593,6 +632,143 @@ namespace SshBridge
             if (lastLine.EndsWith("password:")) return true;
             if (lastLine.Contains("[sudo]") && lastLine.Contains("password")) return true;
             if (Regex.IsMatch(lastLine, @"password for \w+:")) return true;
+            
+            return false;
+        }
+
+        private bool IsBlockedCommand(string command, out string reason)
+        {
+            var trimmed = command.Trim();
+            var parts = trimmed.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+            var firstWord = parts.FirstOrDefault()?.ToLowerInvariant() ?? "";
+            var fullLower = trimmed.ToLowerInvariant();
+            
+            reason = "";
+            
+            switch (firstWord)
+            {
+                // Editors - always blocked (no non-interactive mode)
+                case "nano":
+                case "vim":
+                case "vi":
+                case "nvim":
+                case "emacs":
+                case "pico":
+                case "joe":
+                case "mcedit":
+                    reason = "Interactive editors not supported. Use:\n" +
+                             "• echo \"content\" > file.txt (create/overwrite)\n" +
+                             "• echo \"more\" >> file.txt (append)\n" +
+                             "• cat << 'EOF' > file.txt (multi-line)\n" +
+                             "• sed -i 's/old/new/g' file.txt (find/replace)";
+                    return true;
+                    
+                // Pagers - always blocked
+                case "less":
+                case "more":
+                    reason = "Use 'cat', 'head -n 100', or 'tail -n 100' instead.";
+                    return true;
+                    
+                // TUI monitors - allow batch mode
+                case "top":
+                    if (!fullLower.Contains("-b"))
+                    {
+                        reason = "Use 'top -b -n 1' for batch mode, or 'ps aux' instead.";
+                        return true;
+                    }
+                    break;
+                case "htop":
+                case "btop":
+                case "atop":
+                case "nmon":
+                case "glances":
+                    reason = "Use 'ps aux', 'free -h', 'df -h', or 'top -b -n 1' instead.";
+                    return true;
+                    
+                // Databases - allow with query flags
+                case "mysql":
+                    if (!fullLower.Contains("-e"))
+                    {
+                        reason = "Use 'mysql -e \"SELECT...\"' for non-interactive query.";
+                        return true;
+                    }
+                    break;
+                case "psql":
+                    if (!fullLower.Contains("-c"))
+                    {
+                        reason = "Use 'psql -c \"SELECT...\"' for non-interactive query.";
+                        return true;
+                    }
+                    break;
+                case "mongo":
+                case "mongosh":
+                    if (!fullLower.Contains("--eval"))
+                    {
+                        reason = "Use 'mongosh --eval \"db.collection.find()\"' for non-interactive.";
+                        return true;
+                    }
+                    break;
+                case "redis-cli":
+                    if (parts.Length == 1)
+                    {
+                        reason = "Add command: 'redis-cli GET key' or 'redis-cli INFO'.";
+                        return true;
+                    }
+                    break;
+                case "sqlite3":
+                    if (!fullLower.Contains("-cmd") && !trimmed.Contains("\""))
+                    {
+                        reason = "Use 'sqlite3 db.sqlite \"SELECT...\"' for non-interactive.";
+                        return true;
+                    }
+                    break;
+                    
+                // Terminal multiplexers - always blocked
+                case "tmux":
+                case "screen":
+                case "byobu":
+                    reason = "Terminal multiplexers not supported in this shell.";
+                    return true;
+                    
+                // File managers - always blocked
+                case "mc":
+                case "ranger":
+                case "nnn":
+                    reason = "Use 'ls -la', 'find', or 'tree' instead.";
+                    return true;
+                    
+                // Nested shells - block unless -c flag
+                case "bash":
+                case "zsh":
+                case "fish":
+                case "sh":
+                case "csh":
+                case "tcsh":
+                    if (!fullLower.Contains("-c"))
+                    {
+                        reason = "Nested shells not supported. Use 'bash -c \"command\"' for one-offs.";
+                        return true;
+                    }
+                    break;
+                    
+                // SSH/remote - always blocked
+                case "ssh":
+                case "telnet":
+                    reason = "Nested SSH not supported. Disconnect and connect to the other server.";
+                    return true;
+                    
+                // Man pages - always blocked
+                case "man":
+                case "info":
+                    reason = "Use 'command --help' or search online.";
+                    return true;
+                    
+                // FTP - always blocked
+                case "ftp":
+                case "sftp":
+                    reason = "Interactive FTP not supported. Use 'scp' or 'curl' instead.";
+                    return true;
+            }
             
             return false;
         }

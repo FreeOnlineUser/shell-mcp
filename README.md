@@ -9,7 +9,8 @@ Terminal access for Claude with two security modes, plus SSH bridge for remote s
 - **Persistent sessions** - `cd` and environment persist across commands
 - **Full visibility** - see every command Claude runs
 - **Sudo support** - toggle to allow root access on Linux
-- **Lift Pen** - pause Claude mid-task to get attention
+- **Lift Pen** - pause Claude mid-task or abort running commands
+- **Interactive command blocking** - prevents shell-breaking TUI apps
 - **Stay on top** - pin the SSH Bridge window
 - **Instant disconnect** - revoke access anytime
 
@@ -24,8 +25,9 @@ WinForms app that:
 - Claude sends commands through it
 - You see all commands and output in real-time
 - **🔓 Sudo** button enables root access (password auto-sent)
-- **✏️ Lift Pen** button pauses Claude's command execution
+- **✏️ Lift Pen** button pauses Claude or aborts running commands
 - **📌 Pin** button keeps window on top
+- Right-click output for Copy/Copy All/Clear
 - Click Disconnect to revoke access instantly
 
 ## Installation
@@ -131,16 +133,59 @@ The Sudo button controls whether Claude can run `sudo` commands:
 ### Lift Pen Feature
 
 Click "Lift Pen" when you want Claude to stop and wait:
+
+**Blocking future commands:**
 - Claude's next command will be blocked
 - You'll see `[BLOCKED - Pen lifted by user]` in the output
 - Claude receives a message explaining the pause
+
+**Aborting running commands:**
+- If a command is currently running when you lift the pen:
+- SSH Bridge sends Ctrl+C to the server immediately
+- The command is aborted and Claude gets partial output
+- Claude sees `[ABORTED BY USER - Pen lifted]`
+
+**Resuming:**
 - Click the button again (now "Pen Up!") to resume
 - Or Claude can call `SshPenDown` to request resumption
 
 This is useful for:
 - Getting Claude's attention during a long task
+- Stopping a command that's taking too long
 - Reviewing what Claude is doing before continuing
 - Taking a break without losing the session
+
+### Interactive Command Blocking
+
+SSH Bridge automatically blocks commands that would break the non-interactive shell:
+
+**Always blocked:**
+- Editors: `vim`, `nano`, `emacs`, `vi`, `nvim`, `pico`, `joe`, `mcedit`
+- Pagers: `less`, `more`
+- TUI monitors: `htop`, `btop`, `atop`, `nmon`, `glances`
+- Terminal multiplexers: `tmux`, `screen`, `byobu`
+- File managers: `mc`, `ranger`, `nnn`
+- Remote shells: `ssh`, `telnet`
+- Man pages: `man`, `info`
+- Interactive FTP: `ftp`, `sftp`
+
+**Allowed with flags:**
+- `top -b -n 1` (batch mode)
+- `mysql -e "SELECT..."` (query flag)
+- `psql -c "SELECT..."` (command flag)
+- `mongosh --eval "..."` (eval flag)
+- `bash -c "command"` (one-liner)
+
+**Helpful alternatives provided:**
+```
+vim → echo "content" > file.txt
+      cat << 'EOF' > file.txt
+      sed -i 's/old/new/g' file.txt
+
+htop → ps aux, free -h, df -h, top -b -n 1
+
+mysql → mysql -e "SELECT..."
+```
 
 Password is held in memory only while connected - never written to disk.
 
@@ -169,9 +214,24 @@ Modifying commands:
 - Uses persistent ShellStream - `cd` works across commands
 - You see every command in real-time
 - Sudo toggle = controlled root access
-- Lift Pen = instant pause
+- Lift Pen = instant pause or abort
+- Interactive commands = blocked with alternatives
 - Disconnect button = instant revoke
 - No password persistence to disk
+
+## Comparison with Other MCP Terminals
+
+| Feature | SSH Bridge | ssh-mcp | mcp-ssh-manager | @mako10k |
+|---------|------------|---------|-----------------|----------|
+| Remote SSH | ✅ | ✅ | ✅ | ❌ |
+| Interactive PTY | ✅ | ❌ | ❌ | ✅ |
+| Sudo handling | ✅ auto | ✅ flags | ✅ | ❌ |
+| Pause/Resume | ✅ Pen | ❌ | ❌ | ❌ |
+| Abort running | ✅ Ctrl+C | ❌ | ❌ | ❌ |
+| GUI | ✅ | ❌ | ❌ | ❌ |
+| Command blocking | ✅ | ❌ | ❌ | ❌ |
+| File transfer | ❌ | ❌ | ✅ SFTP | ✅ |
+| Multi-session | ❌ | ❌ | ✅ | ✅ |
 
 ## Dependencies
 
