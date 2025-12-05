@@ -407,6 +407,30 @@ namespace ShellMcp
         {
             return SendCommand("__CONNECT__");
         }
+
+        public static string GetPenStatus()
+        {
+            try
+            {
+                return SendCommand("__PEN_STATUS__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string PutPenDown()
+        {
+            try
+            {
+                return SendCommand("__PEN_DOWN__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
     }
 
     // ===============================================
@@ -598,6 +622,54 @@ namespace ShellMcp
             catch (Exception ex)
             {
                 return $"❌ Error: {ex.Message}";
+            }
+        }
+
+        [McpServerTool, Description("Check if user has lifted the pen (paused command execution). When pen is lifted, commands will be blocked until pen is put back down.")]
+        public static string SshPenStatus()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var status = SshBridgeClient.GetPenStatus();
+                return status switch
+                {
+                    "PEN_LIFTED" => "✋ Pen is LIFTED - User has paused command execution. Wait for user or call SshPenDown to request resumption.",
+                    "PEN_DOWN" => "✏️ Pen is DOWN - Commands will execute normally.",
+                    _ => $"⚠️ Unknown status: {status}"
+                };
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Request to put the pen back down (resume command execution). Only works if pen was lifted. User can also click the button manually.")]
+        public static string SshPenDown()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.PutPenDown();
+                return result switch
+                {
+                    "PEN_LOWERED" => "✏️ Pen lowered - Command execution resumed.",
+                    "PEN_ALREADY_DOWN" => "✏️ Pen was already down - Commands executing normally.",
+                    _ => $"⚠️ Unexpected response: {result}"
+                };
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
             }
         }
     }
