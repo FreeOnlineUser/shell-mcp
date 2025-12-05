@@ -8,6 +8,7 @@ Terminal access for Claude with two security modes, plus SSH bridge for remote s
 - **SSH Bridge** - GUI app for secure remote server access
 - **Persistent sessions** - `cd` and environment persist across commands
 - **Full visibility** - see every command Claude runs
+- **Sudo support** - toggle to allow root access on Linux
 - **Lift Pen** - pause Claude mid-task to get attention
 - **Stay on top** - pin the SSH Bridge window
 - **Instant disconnect** - revoke access anytime
@@ -22,8 +23,9 @@ WinForms app that:
 - You authenticate with password (never stored on disk)
 - Claude sends commands through it
 - You see all commands and output in real-time
-- **Lift Pen** button pauses Claude's command execution
-- **Pin** button keeps window on top
+- **🔓 Sudo** button enables root access (password auto-sent)
+- **✏️ Lift Pen** button pauses Claude's command execution
+- **📌 Pin** button keeps window on top
 - Click Disconnect to revoke access instantly
 
 ## Installation
@@ -101,9 +103,30 @@ Edit `%APPDATA%\Claude\claude_desktop_config.json`:
 3. Click **Connect**
 4. Window shows all commands Claude runs and their output
 5. Use toolbar buttons:
+   - **🔓 Sudo** - Enable root access (becomes 🔐 when active)
    - **📌 Pin** - Keep window on top of other windows
    - **✏️ Lift Pen** - Pause Claude's command execution
    - **Disconnect** - End session and revoke access
+
+### Sudo Feature
+
+The Sudo button controls whether Claude can run `sudo` commands:
+
+**Sudo OFF (default):**
+- `sudo` commands are blocked before they reach the server
+- Claude sees: `SUDO_BLOCKED: Sudo commands are disabled`
+- Shell stays clean, no password prompts
+
+**Sudo ON (purple button):**
+- `sudo` commands are sent to the server
+- Password is automatically sent when prompted
+- Claude gets the command output with root privileges
+
+**Security:**
+- Password is stored in memory only (cleared on disconnect)
+- Password is never sent back to Claude
+- You control when sudo is available
+- Toggle on/off anytime during the session
 
 ### Lift Pen Feature
 
@@ -145,9 +168,10 @@ Modifying commands:
 - You authenticate manually each session
 - Uses persistent ShellStream - `cd` works across commands
 - You see every command in real-time
+- Sudo toggle = controlled root access
 - Lift Pen = instant pause
 - Disconnect button = instant revoke
-- No password persistence
+- No password persistence to disk
 
 ## Dependencies
 
