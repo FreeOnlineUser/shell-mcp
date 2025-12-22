@@ -1,3 +1,16 @@
+---
+license: mit
+tags:
+  - mcp
+  - claude
+  - shell
+  - ssh
+  - windows
+  - dotnet
+language:
+  - en
+---
+
 # Shell MCP Server
 
 Terminal access for Claude with two security modes, plus SSH bridge for remote servers.
