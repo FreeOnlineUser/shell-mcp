@@ -1,7 +1,12 @@
+# Build outputs
 bin/
 obj/
+
+# IDE
 .vs/
 .vscode/
 *.user
+
+# OS
 .DS_Store
 Thumbs.db

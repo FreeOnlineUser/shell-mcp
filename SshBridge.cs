@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.Drawing;
 using System.IO;
@@ -53,12 +53,21 @@ namespace SshBridge
         private bool _stayOnTop;
         private bool _penLifted;
         private bool _allowSudo;
+        private bool _isRunning;
         private string _storedPassword = "";
         private Button _stayOnTopButton = null!;
         private Button _penButton = null!;
         private Button _sudoButton = null!;
+        private System.Windows.Forms.Timer _runningTimer = null!;
+        private int _runningDots;
 
         private const int PORT = 52718;
+        private const int MAX_OUTPUT_BYTES = 500 * 1024; // 500KB limit for MCP
+        private const int MAX_OUTPUT_LINES = 150; // Keep last N lines for large output
+        private const int DEFAULT_TIMEOUT_MS = 30000;
+        
+        private int _nextCommandTimeoutMs = DEFAULT_TIMEOUT_MS; // Configurable per-command
+        private Dictionary<string, int> _spawnedProcesses = new(); // Track background processes
 
         public SshBridgeForm()
         {
@@ -236,6 +245,19 @@ namespace SshBridge
 
             this.Controls.Add(_loginPanel);
             this.Controls.Add(_sessionPanel);
+
+            // Timer for running indicator
+            _runningTimer = new System.Windows.Forms.Timer { Interval = 400 };
+            _runningTimer.Tick += (s, e) =>
+            {
+                if (_isRunning)
+                {
+                    _runningDots = (_runningDots + 1) % 4;
+                    var dots = new string('.', _runningDots);
+                    _statusLabel.Text = $"⚡ Running{dots}";
+                    _statusLabel.ForeColor = Color.Yellow;
+                }
+            };
         }
 
         private void Connect()
@@ -454,6 +476,7 @@ namespace SshBridge
                 try
                 {
                     _commandCount++;
+                    SetRunning(true);
                     
                     // Clear any pending output
                     ReadAvailable();
@@ -478,7 +501,8 @@ namespace SshBridge
                     _shellStream.WriteLine(command);
                     
                     // Wait for output and prompt
-                    var output = WaitForPrompt(30000);
+                    var output = WaitForPrompt(_nextCommandTimeoutMs);
+                    _nextCommandTimeoutMs = DEFAULT_TIMEOUT_MS; // Reset after use
                     
                     // Handle sudo password prompt (only runs if sudo IS enabled)
                     if (command.TrimStart().StartsWith("sudo") && IsSudoPrompt(output))
@@ -498,9 +522,33 @@ namespace SshBridge
                         output = "(no output)";
                     }
 
-                    AppendOutput(output);
+                    // Tail large output - keep last N lines
+                    var lines = output.Split('\n');
+                    string returnOutput;
+                    if (lines.Length > MAX_OUTPUT_LINES)
+                    {
+                        var tailLines = lines.Skip(lines.Length - MAX_OUTPUT_LINES).ToArray();
+                        returnOutput = $"[... {lines.Length - MAX_OUTPUT_LINES} lines truncated ...]\n" + string.Join("\n", tailLines);
+                    }
+                    else
+                    {
+                        returnOutput = output;
+                    }
                     
-                    return output;
+                    // Output already displayed in real-time by WaitForPrompt
+                    if (lines.Length > MAX_OUTPUT_LINES)
+                    {
+                        AppendOutput($"[Returned last {MAX_OUTPUT_LINES} of {lines.Length} lines to Claude]", Color.Gray);
+                    }
+                    
+                    // Final size check
+                    if (Encoding.UTF8.GetByteCount(returnOutput) > MAX_OUTPUT_BYTES)
+                    {
+                        returnOutput = TruncateToBytes(returnOutput, MAX_OUTPUT_BYTES);
+                        returnOutput += $"\n\n[OUTPUT TRUNCATED - exceeded 500KB limit]";
+                    }
+                    
+                    return returnOutput;
                 }
                 catch (Exception ex)
                 {
@@ -508,6 +556,75 @@ namespace SshBridge
                     AppendOutput(error, Color.Red);
                     return error;
                 }
+                finally
+                {
+                    SetRunning(false);
+                }
+            }
+        }
+
+        private void SetRunning(bool running)
+        {
+            _isRunning = running;
+            if (this.InvokeRequired)
+            {
+                this.Invoke(() => SetRunning(running));
+                return;
+            }
+            
+            if (running)
+            {
+                _runningDots = 0;
+                _runningTimer.Start();
+            }
+            else
+            {
+                _runningTimer.Stop();
+                _statusLabel.Text = $"Connected to {_currentUser}@{_currentHost}";
+                _statusLabel.ForeColor = Color.White;
+            }
+        }
+
+        private static string TruncateToBytes(string text, int maxBytes)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+            var bytes = Encoding.UTF8.GetBytes(text);
+            if (bytes.Length <= maxBytes) return text;
+            
+            // Find a safe cut point (don't break UTF-8 sequences)
+            int cutPoint = maxBytes;
+            while (cutPoint > 0 && (bytes[cutPoint] & 0xC0) == 0x80)
+                cutPoint--;
+            
+            return Encoding.UTF8.GetString(bytes, 0, cutPoint);
+        }
+
+        private bool IsProcessRunning(int pid)
+        {
+            if (pid <= 0) return false;
+            try
+            {
+                var proc = System.Diagnostics.Process.GetProcessById(pid);
+                return !proc.HasExited;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private void SendAbort()
+        {
+            if (_shellStream != null && _isConnected)
+            {
+                try
+                {
+                    _shellStream.Write("\x03"); // Ctrl+C
+                    Thread.Sleep(100);
+                    _shellStream.Write("\x03"); // Send twice for stubborn processes
+                    AppendOutput("[ABORT SIGNAL SENT - Ctrl+C]", Color.Orange);
+                }
+                catch { }
             }
         }
 
@@ -562,6 +679,13 @@ namespace SshBridge
                         var chunk = Encoding.UTF8.GetString(buffer, 0, read);
                         sb.Append(chunk);
                         lastDataTime = sw.ElapsedMilliseconds;
+                        
+                        // Real-time display update
+                        var cleaned = StripAnsiCodes(chunk);
+                        if (!string.IsNullOrEmpty(cleaned))
+                        {
+                            AppendOutput(cleaned, Color.FromArgb(180, 180, 180));
+                        }
                     }
                 }
                 else
@@ -576,7 +700,7 @@ namespace SshBridge
                             break;
                         }
                     }
-                    Thread.Sleep(20);
+                    Thread.Sleep(5); // Fast polling for responsive terminal
                 }
             }
             
@@ -612,7 +736,7 @@ namespace SshBridge
             if ((lastLine.EndsWith("$") || lastLine.EndsWith("#")) && lastLine.Contains("@")) return true;
             
             // Windows cmd prompt: ends with > and contains drive letter or path
-            if (lastLine.EndsWith(">") && (lastLine.Contains("\\") || lastLine.Contains(":/"))) return true;
+            if (lastLine.EndsWith(">") && (lastLine.Contains(":\\") || lastLine.Contains(":/"))) return true;
             
             // PowerShell prompt
             if (lastLine.EndsWith("PS>") || lastLine.EndsWith("PS >")) return true;
@@ -881,6 +1005,177 @@ namespace SshBridge
                             else
                             {
                                 response = "PEN_ALREADY_DOWN";
+                            }
+                        }
+                        else if (command == "__ABORT__")
+                        {
+                            SendAbort();
+                            response = _isRunning ? "ABORT_SENT" : "NO_COMMAND_RUNNING";
+                        }
+                        else if (command == "__IS_RUNNING__")
+                        {
+                            response = _isRunning ? "RUNNING" : "IDLE";
+                        }
+                        else if (command.StartsWith("__TIMEOUT__:"))
+                        {
+                            var secStr = command.Substring(12);
+                            if (int.TryParse(secStr, out int seconds) && seconds > 0 && seconds <= 3600)
+                            {
+                                _nextCommandTimeoutMs = seconds * 1000;
+                                response = $"TIMEOUT_SET:{seconds}s";
+                                AppendOutput($"[Timeout set to {seconds}s for next command]", Color.Cyan);
+                            }
+                            else
+                            {
+                                response = "ERROR: Invalid timeout (1-3600 seconds)";
+                            }
+                        }
+                        else if (command.StartsWith("__KILL_PORT__:"))
+                        {
+                            var portStr = command.Substring(14);
+                            if (int.TryParse(portStr, out int portNum) && portNum > 0 && portNum <= 65535)
+                            {
+                                // Execute netstat to find PID, then taskkill
+                                var killCmd = $"for /f \"tokens=5\" %a in ('netstat -ano ^| findstr :{portNum} ^| findstr LISTENING') do @taskkill /PID %a /F 2>nul & echo Killed PID %a";
+                                response = ExecuteCommand(killCmd);
+                            }
+                            else
+                            {
+                                response = "ERROR: Invalid port number";
+                            }
+                        }
+                        else if (command.StartsWith("__WRITE_FILE__:"))
+                        {
+                            // Format: __WRITE_FILE__:C:\path\file.txt|content
+                            // Uses | as delimiter since it's not valid in Windows paths
+                            // Use <<LF>> for newlines, <<CR>> for carriage returns
+                            var rest = command.Substring(15);
+                            var pipeIdx = rest.IndexOf('|');
+                            if (pipeIdx > 0)
+                            {
+                                var path = rest.Substring(0, pipeIdx);
+                                var content = rest.Substring(pipeIdx + 1)
+                                    .Replace("<<CRLF>>", "\r\n")
+                                    .Replace("<<LF>>", "\r\n")   // Convert to Windows line endings
+                                    .Replace("<<CR>>", "\r");
+                                try
+                                {
+                                    // Base64 encode to avoid ALL escaping issues
+                                    var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+                                    var psCmd = $"[System.IO.File]::WriteAllText('{path}', [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{base64}')))";
+                                    ExecuteCommand($"powershell -Command \"{psCmd}\"");
+                                    response = $"WRITTEN:{path} ({content.Length} chars)";
+                                    AppendOutput($"[Wrote {content.Length} chars to {path}]", Color.Green);
+                                }
+                                catch (Exception ex)
+                                {
+                                    response = $"ERROR: {ex.Message}";
+                                }
+                            }
+                            else
+                            {
+                                response = "ERROR: Use __WRITE_FILE__:path|content (use <<LF>> for newlines)";
+                            }
+                        }
+                        else if (command.StartsWith("__APPEND_FILE__:"))
+                        {
+                            // Format: __APPEND_FILE__:C:\path\file.txt|content
+                            var rest = command.Substring(16);
+                            var pipeIdx = rest.IndexOf('|');
+                            if (pipeIdx > 0)
+                            {
+                                var path = rest.Substring(0, pipeIdx);
+                                var content = rest.Substring(pipeIdx + 1)
+                                    .Replace("<<CRLF>>", "\r\n")
+                                    .Replace("<<LF>>", "\r\n")
+                                    .Replace("<<CR>>", "\r");
+                                try
+                                {
+                                    // Base64 encode to avoid ALL escaping issues
+                                    var base64 = Convert.ToBase64String(Encoding.UTF8.GetBytes(content));
+                                    var psCmd = $"[System.IO.File]::AppendAllText('{path}', [System.Text.Encoding]::UTF8.GetString([Convert]::FromBase64String('{base64}')))";
+                                    ExecuteCommand($"powershell -Command \"{psCmd}\"");
+                                    response = $"APPENDED:{path} ({content.Length} chars)";
+                                    AppendOutput($"[Appended {content.Length} chars to {path}]", Color.Green);
+                                }
+                                catch (Exception ex)
+                                {
+                                    response = $"ERROR: {ex.Message}";
+                                }
+                            }
+                            else
+                            {
+                                response = "ERROR: Use __APPEND_FILE__:path|content (use <<LF>> for newlines)";
+                            }
+                        }
+                        else if (command.StartsWith("__SPAWN__:"))
+                        {
+                            // Format: __SPAWN__:name:command
+                            var rest = command.Substring(10);
+                            var colonIdx = rest.IndexOf(':');
+                            if (colonIdx > 0)
+                            {
+                                var name = rest.Substring(0, colonIdx);
+                                var spawnCmd = rest.Substring(colonIdx + 1);
+                                // Run in background, capture PID via PowerShell
+                                var psCmd = $"$p = Start-Process -FilePath cmd -ArgumentList '/c {spawnCmd.Replace("'", "''")}' -PassThru -WindowStyle Hidden; $p.Id";
+                                var pidResult = ExecuteCommand($"powershell -Command \"{psCmd}\"");
+                                if (int.TryParse(pidResult.Trim().Split('\n').Last().Trim(), out int pid))
+                                {
+                                    _spawnedProcesses[name] = pid;
+                                    response = $"SPAWNED:{name}:PID={pid}";
+                                }
+                                else
+                                {
+                                    response = $"SPAWN_STARTED:{name} (PID unknown)";
+                                }
+                            }
+                            else
+                            {
+                                response = "ERROR: Use __SPAWN__:name:command";
+                            }
+                        }
+                        else if (command == "__LIST_SPAWNED__")
+                        {
+                            if (_spawnedProcesses.Count == 0)
+                            {
+                                response = "NO_SPAWNED_PROCESSES";
+                            }
+                            else
+                            {
+                                var sb = new StringBuilder();
+                                foreach (var kvp in _spawnedProcesses)
+                                {
+                                    // Check if still running
+                                    var checkCmd = $"tasklist /FI \"PID eq {kvp.Value}\" /NH 2>nul | findstr {kvp.Value}";
+                                    var checkResult = ExecuteCommand(checkCmd);
+                                    var status = checkResult.Contains(kvp.Value.ToString()) ? "RUNNING" : "STOPPED";
+                                    sb.AppendLine($"{kvp.Key}: PID={kvp.Value} ({status})");
+                                }
+                                response = sb.ToString().TrimEnd();
+                            }
+                        }
+                        else if (command == "__TAIL__")
+                        {
+                            // Get last 50 lines from the output textbox
+                            string text = "";
+                            this.Invoke(() => text = _outputBox.Text);
+                            var lines = text.Split('\n');
+                            var tail = lines.Skip(Math.Max(0, lines.Length - 50)).ToArray();
+                            response = string.Join("\n", tail);
+                        }
+                        else if (command.StartsWith("__KILL_SPAWNED__:"))
+                        {
+                            var name = command.Substring(17);
+                            if (_spawnedProcesses.TryGetValue(name, out int pid))
+                            {
+                                ExecuteCommand($"taskkill /PID {pid} /F /T 2>nul");
+                                _spawnedProcesses.Remove(name);
+                                response = $"KILLED:{name}:PID={pid}";
+                            }
+                            else
+                            {
+                                response = $"ERROR: No spawned process named '{name}'";
                             }
                         }
                         else if (command.StartsWith("__PREFILL__:"))

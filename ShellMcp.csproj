@@ -9,6 +9,7 @@
     <RootNamespace>ShellMcp</RootNamespace>
   </PropertyGroup>
 
+  <!-- Only compile ShellMcp.cs -->
   <ItemGroup>
     <Compile Remove="*.cs" />
     <Compile Include="ShellMcp.cs" />

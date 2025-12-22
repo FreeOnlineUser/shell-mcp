@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -25,11 +25,11 @@ namespace ShellMcp
 
             var builder = Host.CreateApplicationBuilder(args);
             
+            // CRITICAL: Disable ALL console logging for MCP stdio transport
+            // Any stdout output will corrupt the JSON-RPC protocol and cause hangs
             builder.Logging.ClearProviders();
-            builder.Logging.AddConsole(options =>
-            {
-                options.LogToStandardErrorThreshold = LogLevel.Trace;
-            });
+            // Optionally log to a file for debugging:
+            // builder.Logging.AddFile("shell-mcp.log");
             
             builder.Services
                 .AddMcpServer()
@@ -431,6 +431,135 @@ namespace ShellMcp
                 return "BRIDGE_NOT_RUNNING";
             }
         }
+
+        public static string SendAbort()
+        {
+            try
+            {
+                return SendCommand("__ABORT__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string IsRunning()
+        {
+            try
+            {
+                return SendCommand("__IS_RUNNING__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string KillPort(int port)
+        {
+            try
+            {
+                return SendCommand($"__KILL_PORT__:{port}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string SetTimeout(int seconds)
+        {
+            try
+            {
+                return SendCommand($"__TIMEOUT__:{seconds}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string GetTail()
+        {
+            try
+            {
+                return SendCommand("__TAIL__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string ListSpawned()
+        {
+            try
+            {
+                return SendCommand("__LIST_SPAWNED__");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string Spawn(string name, string command)
+        {
+            try
+            {
+                return SendCommand($"__SPAWN__:{name}:{command}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string KillSpawned(string name)
+        {
+            try
+            {
+                return SendCommand($"__KILL_SPAWNED__:{name}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string WriteFile(string path, string content)
+        {
+            try
+            {
+                // Encode newlines for line-based protocol
+                var encoded = content
+                    .Replace("\r\n", "<<CRLF>>")
+                    .Replace("\n", "<<LF>>")
+                    .Replace("\r", "<<CR>>");
+                return SendCommand($"__WRITE_FILE__:{path}|{encoded}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
+
+        public static string AppendFile(string path, string content)
+        {
+            try
+            {
+                var encoded = content
+                    .Replace("\r\n", "<<CRLF>>")
+                    .Replace("\n", "<<LF>>")
+                    .Replace("\r", "<<CR>>");
+                return SendCommand($"__APPEND_FILE__:{path}|{encoded}");
+            }
+            catch
+            {
+                return "BRIDGE_NOT_RUNNING";
+            }
+        }
     }
 
     // ===============================================
@@ -666,6 +795,225 @@ namespace ShellMcp
                     "PEN_ALREADY_DOWN" => "✏️ Pen was already down - Commands executing normally.",
                     _ => $"⚠️ Unexpected response: {result}"
                 };
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Send Ctrl+C (abort signal) to the currently running command. Use this when a command is taking too long or appears stuck.")]
+        public static string SshAbort()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.SendAbort();
+                return result switch
+                {
+                    "ABORT_SENT" => "🛑 Abort signal (Ctrl+C) sent to running command.",
+                    "NO_COMMAND_RUNNING" => "ℹ️ No command currently running.",
+                    _ => $"⚠️ Response: {result}"
+                };
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Check if a command is currently running on the SSH connection.")]
+        public static string SshIsRunning()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.IsRunning();
+                return result switch
+                {
+                    "RUNNING" => "⚡ A command is currently running.",
+                    "IDLE" => "✅ No command running - ready for new commands.",
+                    _ => $"⚠️ Status: {result}"
+                };
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Kill process listening on a specific port. Useful for freeing up ports or killing hung services.")]
+        public static string SshKillPort(
+            [Description("Port number to kill (1-65535)")] int port)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                if (port < 1 || port > 65535)
+                {
+                    return "❌ Invalid port number. Must be 1-65535.";
+                }
+
+                var result = SshBridgeClient.KillPort(port);
+                return $"🔫 Kill port {port}:\n{result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Set timeout for the next SSH command. Useful for long-running operations like large downloads.")]
+        public static string SshSetTimeout(
+            [Description("Timeout in seconds (1-3600)")] int seconds)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                if (seconds < 1 || seconds > 3600)
+                {
+                    return "❌ Invalid timeout. Must be 1-3600 seconds.";
+                }
+
+                var result = SshBridgeClient.SetTimeout(seconds);
+                return $"⏱️ {result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Get the last 50 lines of output from the SSH Bridge terminal. Useful for checking progress of background tasks.")]
+        public static string SshTail()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.GetTail();
+                return $"📜 Recent output:\n{result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("List all tracked background processes spawned via SshSpawn.")]
+        public static string SshListSpawned()
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.ListSpawned();
+                return $"📋 Background processes:\n{result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Spawn a background process with a trackable name. Use SshListSpawned to see status and SshKillSpawned to terminate.")]
+        public static string SshSpawn(
+            [Description("Name to identify this background process")] string name,
+            [Description("Command to run in background")] string command)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.Spawn(name, command);
+                return $"🚀 {result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Kill a background process by name (spawned via SshSpawn or matching window title).")]
+        public static string SshKillSpawned(
+            [Description("Name of the background process to kill")] string name)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.KillSpawned(name);
+                return $"🔫 {result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Write content to a file on the remote system without shell escaping. Perfect for batch files, configs, etc.")]
+        public static string SshWriteFile(
+            [Description("Full path to file (e.g., C:\\scripts\\run.bat)")] string path,
+            [Description("Content to write - characters like & | < > will NOT be escaped")] string content)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.WriteFile(path, content);
+                return $"📝 {result}";
+            }
+            catch
+            {
+                return "❌ SSH Bridge not running";
+            }
+        }
+
+        [McpServerTool, Description("Append content to a file on the remote system without shell escaping.")]
+        public static string SshAppendFile(
+            [Description("Full path to file")] string path,
+            [Description("Content to append - characters like & | < > will NOT be escaped")] string content)
+        {
+            try
+            {
+                if (!SshBridgeClient.IsBridgeRunning())
+                {
+                    return "❌ SSH Bridge not running";
+                }
+
+                var result = SshBridgeClient.AppendFile(path, content);
+                return $"📝 {result}";
             }
             catch
             {
