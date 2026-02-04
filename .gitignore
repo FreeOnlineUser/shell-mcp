@@ -10,3 +10,6 @@ obj/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scripts with secrets
+upload_to_hf.py
